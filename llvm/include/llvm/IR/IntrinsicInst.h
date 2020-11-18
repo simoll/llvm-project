@@ -278,6 +278,15 @@ public:
   unsigned getFunctionalOpcode() const {
     return GetFunctionalOpcodeForVP(getIntrinsicID());
   }
+  bool isFunctionalCommutative() const {
+    return Instruction::isCommutative(getFunctionalOpcode());
+  }
+  bool isFunctionalUnaryOp() const {
+    return Instruction::isUnaryOp(getFunctionalOpcode());
+  }
+  bool isFunctionalBinaryOp() const {
+    return Instruction::isBinaryOp(getFunctionalOpcode());
+  }
 
   // Equivalent non-predicated opcode
   static unsigned GetFunctionalOpcodeForVP(Intrinsic::ID ID);
@@ -288,8 +297,20 @@ class ConstrainedFPIntrinsic : public IntrinsicInst {
 public:
   bool isUnaryOp() const;
   bool isTernaryOp() const;
+  bool hasRoundingMode() const;
   Optional<RoundingMode> getRoundingMode() const;
   Optional<fp::ExceptionBehavior> getExceptionBehavior() const;
+
+  unsigned getFunctionalOpcode() const;
+  bool isFunctionalCommutative() const {
+    return Instruction::isCommutative(getFunctionalOpcode());
+  }
+  bool isFunctionalUnaryOp() const {
+    return Instruction::isUnaryOp(getFunctionalOpcode());
+  }
+  bool isFunctionalBinaryOp() const {
+    return Instruction::isBinaryOp(getFunctionalOpcode());
+  }
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const IntrinsicInst *I);

@@ -37,6 +37,7 @@
 
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/IR/Traits/SemanticTrait.h"
 
 namespace llvm {
 
@@ -60,6 +61,7 @@ class Value;
 /// InstrInfoQuery provides an interface to query additional information for
 /// instructions like metadata or keywords like nsw, which provides conservative
 /// results if the users specified it is safe to use.
+/// FIXME: Incorporate this into trait framework.
 struct InstrInfoQuery {
   InstrInfoQuery(bool UMD) : UseInstrInfo(UMD) {}
   InstrInfoQuery() : UseInstrInfo(true) {}
@@ -83,9 +85,9 @@ struct InstrInfoQuery {
     return false;
   }
 
-  bool isExact(const BinaryOperator *Op) const {
-    if (UseInstrInfo && isa<PossiblyExactOperator>(Op))
-      return cast<PossiblyExactOperator>(Op)->isExact();
+  bool isExact(const Instruction *I) const {
+    if (UseInstrInfo && isa<PossiblyExactOperator>(I))
+      return cast<PossiblyExactOperator>(I)->isExact();
     return false;
   }
 };
@@ -146,16 +148,34 @@ Value *SimplifyFNegInst(Value *Op, FastMathFlags FMF,
                         const SimplifyQuery &Q);
 
 /// Given operands for an Add, fold the result or return null.
+template <typename Trait>
 Value *SimplifyAddInst(Value *LHS, Value *RHS, bool isNSW, bool isNUW,
-                       const SimplifyQuery &Q);
+                       const SimplifyQuery &Q, MatcherContext<Trait> &Matcher);
+
+inline Value *SimplifyAddInst(Value *LHS, Value *RHS, bool isNSW, bool isNUW,
+                       const SimplifyQuery &Q) {
+  MatcherContext<DefaultTrait> Matcher;
+  return SimplifyAddInst<DefaultTrait>(LHS, RHS, isNSW, isNUW, Q, Matcher);
+}
 
 /// Given operands for a Sub, fold the result or return null.
 Value *SimplifySubInst(Value *LHS, Value *RHS, bool isNSW, bool isNUW,
                        const SimplifyQuery &Q);
 
-/// Given operands for an FAdd, fold the result or return null.
+/// Given operands for an FAdd, and a matcher context that was initialized for
+/// the actual instruction, fold the result or return null.
+template <typename Trait>
 Value *SimplifyFAddInst(Value *LHS, Value *RHS, FastMathFlags FMF,
-                        const SimplifyQuery &Q);
+                        const SimplifyQuery &Q, MatcherContext<Trait> &Matcher);
+
+/// Given operands for an FAdd, fold the result or return null.
+/// We don't have any information about the traits of the 'fadd' so run this
+/// with the unassuming default trait.
+inline Value *SimplifyFAddInst(Value *LHS, Value *RHS, FastMathFlags FMF,
+                        const SimplifyQuery &Q) {
+  MatcherContext<DefaultTrait> Matcher;
+  return SimplifyFAddInst(LHS, RHS, FMF, Q, Matcher);
+}
 
 /// Given operands for an FSub, fold the result or return null.
 Value *SimplifyFSubInst(Value *LHS, Value *RHS, FastMathFlags FMF,
@@ -272,13 +292,27 @@ Value *SimplifyUnOp(unsigned Opcode, Value *Op, FastMathFlags FMF,
                     const SimplifyQuery &Q);
 
 /// Given operands for a BinaryOperator, fold the result or return null.
+template <typename Trait>
 Value *SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS,
-                     const SimplifyQuery &Q);
+                     const SimplifyQuery &Q, MatcherContext<Trait> &Matcher);
+
+inline Value *SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS,
+                            const SimplifyQuery &Q) {
+  MatcherContext<DefaultTrait> Matcher;
+  return SimplifyBinOp<>(Opcode, LHS, RHS, Q, Matcher);
+}
 
 /// Given operands for a BinaryOperator, fold the result or return null.
 /// Try to use FastMathFlags when folding the result.
-Value *SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS,
-                     FastMathFlags FMF, const SimplifyQuery &Q);
+template <typename Trait>
+Value *SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS, FastMathFlags FMF,
+                     const SimplifyQuery &Q, MatcherContext<Trait> &Matcher);
+
+inline Value *SimplifyBinOp(unsigned Opcode, Value *LHS, Value *RHS,
+                            FastMathFlags FMF, const SimplifyQuery &Q) {
+  MatcherContext<DefaultTrait> Matcher;
+  return SimplifyBinOp(Opcode, LHS, RHS, FMF, Q, Matcher);
+}
 
 /// Given a callsite, fold the result or return null.
 Value *SimplifyCall(CallBase *Call, const SimplifyQuery &Q);
@@ -289,6 +323,10 @@ Value *SimplifyFreezeInst(Value *Op, const SimplifyQuery &Q);
 
 /// See if we can compute a simplified version of this instruction. If not,
 /// return null.
+template<typename Trait>
+Value *SimplifyInstructionWithTrait(Instruction *I, const SimplifyQuery &Q,
+                           OptimizationRemarkEmitter *ORE = nullptr);
+
 Value *SimplifyInstruction(Instruction *I, const SimplifyQuery &Q,
                            OptimizationRemarkEmitter *ORE = nullptr);
 
@@ -336,4 +374,3 @@ const SimplifyQuery getBestSimplifyQuery(LoopStandardAnalysisResults &,
 } // end namespace llvm
 
 #endif
-

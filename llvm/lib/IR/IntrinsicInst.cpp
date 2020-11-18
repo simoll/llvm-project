@@ -104,12 +104,24 @@ Value *InstrProfIncrementInst::getStep() const {
   return ConstantInt::get(Type::getInt64Ty(Context), 1);
 }
 
+bool ConstrainedFPIntrinsic::hasRoundingMode() const {
+  switch (getIntrinsicID()) {
+  default:
+    return false;
+#define INSTRUCTION(N, A, R, I)                                                \
+  case Intrinsic::I:                                                           \
+    return R;
+#include "llvm/IR/ConstrainedOps.def"
+  }
+}
+
 Optional<RoundingMode> ConstrainedFPIntrinsic::getRoundingMode() const {
+  if (!hasRoundingMode())
+    return None;
   unsigned NumOperands = getNumArgOperands();
   Metadata *MD =
       cast<MetadataAsValue>(getArgOperand(NumOperands - 2))->getMetadata();
-  if (!MD || !isa<MDString>(MD))
-    return None;
+  assert(MD && isa<MDString>(MD));
   return StrToRoundingMode(cast<MDString>(MD)->getString());
 }
 
@@ -143,6 +155,21 @@ FCmpInst::Predicate ConstrainedFPCmpIntrinsic::getPredicate() const {
       .Case("ule", FCmpInst::FCMP_ULE)
       .Case("une", FCmpInst::FCMP_UNE)
       .Default(FCmpInst::BAD_FCMP_PREDICATE);
+}
+
+unsigned ConstrainedFPIntrinsic::getFunctionalOpcode() const {
+  switch (getIntrinsicID()) {
+  default:
+    // Just some intrinsic call
+    return Instruction::Call;
+
+#define DAG_FUNCTION(OPC, FPEXCEPT, FPROUND, INTRIN, SD)
+
+#define DAG_INSTRUCTION(OPC, FPEXCEPT, FPROUND, INTRIN, SD)                    \
+  case Intrinsic::INTRIN:                                                      \
+    return OPC;
+#include "llvm/IR/ConstrainedOps.def"
+  }
 }
 
 bool ConstrainedFPIntrinsic::isUnaryOp() const {

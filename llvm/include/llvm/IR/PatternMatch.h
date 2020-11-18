@@ -1,4 +1,4 @@
-//===- PatternMatch.h - Match on the LLVM IR --------------------*- C++ -*-===//
+//===------- PatternMatch.h - Match on the LLVM IR --------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -25,8 +25,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_IR_PATTERNMATCH_H
-#define LLVM_IR_PATTERNMATCH_H
+#ifndef LLVM_IR_TRAITPATTERNMATCH_H
+#define LLVM_IR_TRAITPATTERNMATCH_H
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -41,13 +41,36 @@
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/IR/Traits/SemanticTrait.h"
+
 #include <cstdint>
 
 namespace llvm {
 namespace PatternMatch {
 
-template <typename Val, typename Pattern> bool match(Val *V, const Pattern &P) {
+// trait-match pattern in a given context and update the context.
+template <typename Val, typename Pattern>
+bool match(Val *V, const Pattern &P) {
+  // TODO All users uninterested in traits should use this as the only entry point to performing a match.
+  // The PatternMatch classes are poluted with overloaded 'match' functions atm.
   return const_cast<Pattern &>(P).match(V);
+}
+
+// trait-match pattern in a given context and update the context.
+template <typename Val, typename Pattern, typename Trait>
+bool match(Val *V, const Pattern &P, MatcherContext<Trait> &MContext) {
+  return const_cast<Pattern &>(P).match(V, MContext);
+}
+
+// trait-match pattern and update the context on match.
+template <typename Val, typename Pattern, typename Trait>
+bool try_match(Val *V, const Pattern &P, MatcherContext<Trait> &MContext) {
+  MatcherContext<Trait> CopyCtx(MContext);
+  if (const_cast<Pattern &>(P).match(V, CopyCtx)) {
+    MContext = CopyCtx;
+    return true;
+  }
+  return false;
 }
 
 template <typename Pattern> bool match(ArrayRef<int> Mask, const Pattern &P) {
@@ -59,8 +82,15 @@ template <typename SubPattern_t> struct OneUse_match {
 
   OneUse_match(const SubPattern_t &SP) : SubPattern(SP) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    return V->hasOneUse() && SubPattern.match(V);
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename OpTy, typename Trait = DefaultTrait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    return V->hasOneUse() && SubPattern.match(V, MContext);
   }
 };
 
@@ -69,7 +99,17 @@ template <typename T> inline OneUse_match<T> m_OneUse(const T &SubPattern) {
 }
 
 template <typename Class> struct class_match {
-  template <typename ITy> bool match(ITy *V) { return isa<Class>(V); }
+
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait = DefaultTrait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    return trait_isa<Trait, Class>(V);
+  }
 };
 
 /// Match an arbitrary value and ignore it.
@@ -110,7 +150,16 @@ template <typename Ty> struct match_unless {
 
   match_unless(const Ty &Matcher) : M(Matcher) {}
 
-  template <typename ITy> bool match(ITy *V) { return !M.match(V); }
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    return !M.match(V, MContext);
+  }
 };
 
 /// Match if the inner matcher does *NOT* match.
@@ -125,12 +174,18 @@ template <typename LTy, typename RTy> struct match_combine_or {
 
   match_combine_or(const LTy &Left, const RTy &Right) : L(Left), R(Right) {}
 
-  template <typename ITy> bool match(ITy *V) {
-    if (L.match(V))
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    if (try_match(V, L, MContext)) {
       return true;
-    if (R.match(V))
-      return true;
-    return false;
+    }
+    return R.match(V, MContext);
   }
 };
 
@@ -140,11 +195,15 @@ template <typename LTy, typename RTy> struct match_combine_and {
 
   match_combine_and(const LTy &Left, const RTy &Right) : L(Left), R(Right) {}
 
-  template <typename ITy> bool match(ITy *V) {
-    if (L.match(V))
-      if (R.match(V))
-        return true;
-    return false;
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    return L.match(V, MContext) && R.match(V, MContext);
   }
 };
 
@@ -165,17 +224,24 @@ struct apint_match {
   bool AllowUndef;
 
   apint_match(const APInt *&Res, bool AllowUndef)
-    : Res(Res), AllowUndef(AllowUndef) {}
+      : Res(Res), AllowUndef(AllowUndef) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (auto *CI = dyn_cast<ConstantInt>(V)) {
       Res = &CI->getValue();
       return true;
     }
     if (V->getType()->isVectorTy())
       if (const auto *C = dyn_cast<Constant>(V))
-        if (auto *CI = dyn_cast_or_null<ConstantInt>(
-                C->getSplatValue(AllowUndef))) {
+        if (auto *CI =
+                dyn_cast_or_null<ConstantInt>(C->getSplatValue(AllowUndef))) {
           Res = &CI->getValue();
           return true;
         }
@@ -192,15 +258,22 @@ struct apfloat_match {
   apfloat_match(const APFloat *&Res, bool AllowUndef)
       : Res(Res), AllowUndef(AllowUndef) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (auto *CI = dyn_cast<ConstantFP>(V)) {
       Res = &CI->getValueAPF();
       return true;
     }
     if (V->getType()->isVectorTy())
       if (const auto *C = dyn_cast<Constant>(V))
-        if (auto *CI = dyn_cast_or_null<ConstantFP>(
-                C->getSplatValue(AllowUndef))) {
+        if (auto *CI =
+                dyn_cast_or_null<ConstantFP>(C->getSplatValue(AllowUndef))) {
           Res = &CI->getValueAPF();
           return true;
         }
@@ -243,7 +316,14 @@ inline apfloat_match m_APFloatForbidUndef(const APFloat *&Res) {
 }
 
 template <int64_t Val> struct constantint_match {
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (const auto *CI = dyn_cast<ConstantInt>(V)) {
       const APInt &CIV = CI->getValue();
       if (Val >= 0)
@@ -262,14 +342,21 @@ template <int64_t Val> inline constantint_match<Val> m_ConstantInt() {
   return constantint_match<Val>();
 }
 
-/// This helper class is used to match constant scalars, vector splats,
-/// and fixed width vectors that satisfy a specified predicate.
-/// For fixed width vector constants, undefined elements are ignored.
+/// This helper class is used to match scalar and fixed width vector integer
+/// constants that satisfy a specified predicate.
+/// For vector constants, undefined elements are ignored.
 template <typename Predicate, typename ConstantVal>
 struct cstval_pred_ty : public Predicate {
-  template <typename ITy> bool match(ITy *V) {
-    if (const auto *CV = dyn_cast<ConstantVal>(V))
-      return this->isValue(CV->getValue());
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    if (const auto *CI = dyn_cast<ConstantVal>(V))
+      return this->isValue(CI->getValue());
     if (const auto *VTy = dyn_cast<VectorType>(V->getType())) {
       if (const auto *C = dyn_cast<Constant>(V)) {
         if (const auto *CV = dyn_cast_or_null<ConstantVal>(C->getSplatValue()))
@@ -317,7 +404,14 @@ template <typename Predicate> struct api_pred_ty : public Predicate {
 
   api_pred_ty(const APInt *&R) : Res(R) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (const auto *CI = dyn_cast<ConstantInt>(V))
       if (this->isValue(CI->getValue())) {
         Res = &CI->getValue();
@@ -343,7 +437,14 @@ template <typename Predicate> struct apf_pred_ty : public Predicate {
 
   apf_pred_ty(const APFloat *&R) : Res(R) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (const auto *CI = dyn_cast<ConstantFP>(V))
       if (this->isValue(CI->getValue())) {
         Res = &CI->getValue();
@@ -410,9 +511,7 @@ struct is_negative {
 inline cst_pred_ty<is_negative> m_Negative() {
   return cst_pred_ty<is_negative>();
 }
-inline api_pred_ty<is_negative> m_Negative(const APInt *&V) {
-  return V;
-}
+inline api_pred_ty<is_negative> m_Negative(const APInt *&V) { return V; }
 
 struct is_nonnegative {
   bool isValue(const APInt &C) { return C.isNonNegative(); }
@@ -422,9 +521,7 @@ struct is_nonnegative {
 inline cst_pred_ty<is_nonnegative> m_NonNegative() {
   return cst_pred_ty<is_nonnegative>();
 }
-inline api_pred_ty<is_nonnegative> m_NonNegative(const APInt *&V) {
-  return V;
-}
+inline api_pred_ty<is_nonnegative> m_NonNegative(const APInt *&V) { return V; }
 
 struct is_strictlypositive {
   bool isValue(const APInt &C) { return C.isStrictlyPositive(); }
@@ -453,9 +550,7 @@ struct is_one {
 };
 /// Match an integer 1 or a vector with all elements equal to 1.
 /// For vectors, this includes constants with undefined elements.
-inline cst_pred_ty<is_one> m_One() {
-  return cst_pred_ty<is_one>();
-}
+inline cst_pred_ty<is_one> m_One() { return cst_pred_ty<is_one>(); }
 
 struct is_zero_int {
   bool isValue(const APInt &C) { return C.isNullValue(); }
@@ -467,7 +562,14 @@ inline cst_pred_ty<is_zero_int> m_ZeroInt() {
 }
 
 struct is_zero {
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     auto *C = dyn_cast<Constant>(V);
     // FIXME: this should be able to do something for scalable vectors
     return C && (C->isNullValue() || cst_pred_ty<is_zero_int>().match(C));
@@ -475,21 +577,15 @@ struct is_zero {
 };
 /// Match any null constant or a vector with all elements equal to 0.
 /// For vectors, this includes constants with undefined elements.
-inline is_zero m_Zero() {
-  return is_zero();
-}
+inline is_zero m_Zero() { return is_zero(); }
 
 struct is_power2 {
   bool isValue(const APInt &C) { return C.isPowerOf2(); }
 };
 /// Match an integer or vector power-of-2.
 /// For vectors, this includes constants with undefined elements.
-inline cst_pred_ty<is_power2> m_Power2() {
-  return cst_pred_ty<is_power2>();
-}
-inline api_pred_ty<is_power2> m_Power2(const APInt *&V) {
-  return V;
-}
+inline cst_pred_ty<is_power2> m_Power2() { return cst_pred_ty<is_power2>(); }
+inline api_pred_ty<is_power2> m_Power2(const APInt *&V) { return V; }
 
 struct is_negated_power2 {
   bool isValue(const APInt &C) { return (-C).isPowerOf2(); }
@@ -578,9 +674,7 @@ struct is_nan {
 };
 /// Match an arbitrary NaN constant. This includes quiet and signalling nans.
 /// For vectors, this includes constants with undefined elements.
-inline cstfp_pred_ty<is_nan> m_NaN() {
-  return cstfp_pred_ty<is_nan>();
-}
+inline cstfp_pred_ty<is_nan> m_NaN() { return cstfp_pred_ty<is_nan>(); }
 
 struct is_nonnan {
   bool isValue(const APFloat &C) { return !C.isNaN(); }
@@ -596,9 +690,7 @@ struct is_inf {
 };
 /// Match a positive or negative infinity FP constant.
 /// For vectors, this includes constants with undefined elements.
-inline cstfp_pred_ty<is_inf> m_Inf() {
-  return cstfp_pred_ty<is_inf>();
-}
+inline cstfp_pred_ty<is_inf> m_Inf() { return cstfp_pred_ty<is_inf>(); }
 
 struct is_noninf {
   bool isValue(const APFloat &C) { return !C.isInfinity(); }
@@ -674,7 +766,15 @@ template <typename Class> struct bind_ty {
 
   bind_ty(Class *&V) : VR(V) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
     if (auto *CV = dyn_cast<Class>(V)) {
       VR = CV;
       return true;
@@ -694,7 +794,9 @@ inline bind_ty<UnaryOperator> m_UnOp(UnaryOperator *&I) { return I; }
 /// Match a binary operator, capturing it if we match.
 inline bind_ty<BinaryOperator> m_BinOp(BinaryOperator *&I) { return I; }
 /// Match a with overflow intrinsic, capturing it if we match.
-inline bind_ty<WithOverflowInst> m_WithOverflowInst(WithOverflowInst *&I) { return I; }
+inline bind_ty<WithOverflowInst> m_WithOverflowInst(WithOverflowInst *&I) {
+  return I;
+}
 
 /// Match a ConstantInt, capturing the value if we match.
 inline bind_ty<ConstantInt> m_ConstantInt(ConstantInt *&CI) { return CI; }
@@ -717,7 +819,15 @@ struct specificval_ty {
 
   specificval_ty(const Value *V) : Val(V) {}
 
-  template <typename ITy> bool match(ITy *V) { return V == Val; }
+  template <typename ITy> bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    return V == Val;
+  }
 };
 
 /// Match if we have a specific specified value.
@@ -730,7 +840,16 @@ template <typename Class> struct deferredval_ty {
 
   deferredval_ty(Class *const &V) : Val(V) {}
 
-  template <typename ITy> bool match(ITy *const V) { return V == Val; }
+  template<typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *const V, MatcherContext<Trait> &MContext) {
+    return V == Val;
+  }
 };
 
 /// A commutative-friendly version of m_Specific().
@@ -746,7 +865,14 @@ struct specific_fpval {
 
   specific_fpval(double V) : Val(V) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template<typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (const auto *CFP = dyn_cast<ConstantFP>(V))
       return CFP->isExactlyValue(Val);
     if (V->getType()->isVectorTy())
@@ -769,7 +895,16 @@ struct bind_const_intval_ty {
 
   bind_const_intval_ty(uint64_t &V) : VR(V) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template<typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
     if (const auto *CV = dyn_cast<ConstantInt>(V))
       if (CV->getValue().ule(UINT64_MAX)) {
         VR = CV->getZExtValue();
@@ -781,13 +916,21 @@ struct bind_const_intval_ty {
 
 /// Match a specified integer value or vector of all elements of that
 /// value.
-template <bool AllowUndefs>
-struct specific_intval {
+template <bool AllowUndefs> struct specific_intval {
   APInt Val;
 
   specific_intval(APInt V) : Val(std::move(V)) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template<typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
     const auto *CI = dyn_cast<ConstantInt>(V);
     if (!CI && V->getType()->isVectorTy())
       if (const auto *C = dyn_cast<Constant>(V))
@@ -825,7 +968,16 @@ struct specific_bbval {
 
   specific_bbval(BasicBlock *Val) : Val(Val) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template<typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
     const auto *BB = dyn_cast<BasicBlock>(V);
     return BB && BB == Val;
   }
@@ -857,11 +1009,30 @@ struct AnyBinaryOp_match {
   // The LHS is always matched first.
   AnyBinaryOp_match(const LHS_t &LHS, const RHS_t &RHS) : L(LHS), R(RHS) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<BinaryOperator>(V))
-      return (L.match(I->getOperand(0)) && R.match(I->getOperand(1))) ||
-             (Commutable && L.match(I->getOperand(1)) &&
-              R.match(I->getOperand(0)));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    auto *I = trait_dyn_cast<Trait, BinaryOperator>(V);
+    if (!I)
+      return false;
+
+    if (!MContext.accept(I))
+      return false;
+
+    MatcherContext<Trait> LRContext(MContext);
+    if (L.match(I->getOperand(0), LRContext) &&
+        R.match(I->getOperand(1), LRContext)) {
+      MContext = LRContext;
+      return true;
+    }
+    if (Commutable && (L.match(I->getOperand(1), MContext) &&
+                       R.match(I->getOperand(0), MContext)))
+      return true;
     return false;
   }
 };
@@ -880,9 +1051,16 @@ template <typename OP_t> struct AnyUnaryOp_match {
 
   AnyUnaryOp_match(const OP_t &X) : X(X) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<UnaryOperator>(V))
-      return X.match(I->getOperand(0));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (auto *I = trait_dyn_cast<Trait, UnaryOperator>(V))
+      return X.match(I->getOperand(0), MContext);
     return false;
   }
 };
@@ -905,12 +1083,24 @@ struct BinaryOp_match {
   // The LHS is always matched first.
   BinaryOp_match(const LHS_t &LHS, const RHS_t &RHS) : L(LHS), R(RHS) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (V->getValueID() == Value::InstructionVal + Opcode) {
-      auto *I = cast<BinaryOperator>(V);
-      return (L.match(I->getOperand(0)) && R.match(I->getOperand(1))) ||
-             (Commutable && L.match(I->getOperand(1)) &&
-              R.match(I->getOperand(0)));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    auto *I = trait_dyn_cast<Trait, const BinaryOperator>(V);
+    if (I && I->getOpcode() == Opcode) {
+      if (try_match(I->getOperand(0), L, MContext) &&
+          try_match(I->getOperand(1), R, MContext)) {
+        return true;
+      }
+      return Commutable && (L.match(I->getOperand(1), MContext) &&
+                            R.match(I->getOperand(0), MContext));
     }
     if (auto *CE = dyn_cast<ConstantExpr>(V))
       return CE->getOpcode() == Opcode &&
@@ -949,25 +1139,36 @@ template <typename Op_t> struct FNeg_match {
   Op_t X;
 
   FNeg_match(const Op_t &Op) : X(Op) {}
-  template <typename OpTy> bool match(OpTy *V) {
-    auto *FPMO = dyn_cast<FPMathOperator>(V);
-    if (!FPMO) return false;
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    auto *FPMO = trait_dyn_cast<Trait, FPMathOperator>(V);
+    if (!FPMO)
+      return false;
 
-    if (FPMO->getOpcode() == Instruction::FNeg)
-      return X.match(FPMO->getOperand(0));
+    auto OPC = trait_cast<Trait, const Operator>(V)->getOpcode();
 
-    if (FPMO->getOpcode() == Instruction::FSub) {
+    if (OPC == Instruction::FNeg)
+      return X.match(FPMO->getOperand(0), MContext);
+
+    if (OPC == Instruction::FSub) {
       if (FPMO->hasNoSignedZeros()) {
         // With 'nsz', any zero goes.
-        if (!cstfp_pred_ty<is_any_zero_fp>().match(FPMO->getOperand(0)))
+        if (!try_match(FPMO->getOperand(0), cstfp_pred_ty<is_any_zero_fp>(), MContext))
           return false;
       } else {
         // Without 'nsz', we need fsub -0.0, X exactly.
-        if (!cstfp_pred_ty<is_neg_zero_fp>().match(FPMO->getOperand(0)))
+        if (!try_match(FPMO->getOperand(0), cstfp_pred_ty<is_neg_zero_fp>(), MContext))
           return false;
       }
 
-      return X.match(FPMO->getOperand(1));
+      return X.match(FPMO->getOperand(1), MContext);
     }
 
     return false;
@@ -975,9 +1176,7 @@ template <typename Op_t> struct FNeg_match {
 };
 
 /// Match 'fneg X' as 'fsub -0.0, X'.
-template <typename OpTy>
-inline FNeg_match<OpTy>
-m_FNeg(const OpTy &X) {
+template <typename OpTy> inline FNeg_match<OpTy> m_FNeg(const OpTy &X) {
   return FNeg_match<OpTy>(X);
 }
 
@@ -1081,8 +1280,16 @@ struct OverflowingBinaryOp_match {
   OverflowingBinaryOp_match(const LHS_t &LHS, const RHS_t &RHS)
       : L(LHS), R(RHS) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *Op = dyn_cast<OverflowingBinaryOperator>(V)) {
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *Op = trait_dyn_cast<Trait,OverflowingBinaryOperator>(V)) {
       if (Op->getOpcode() != Opcode)
         return false;
       if (WrapFlags & OverflowingBinaryOperator::NoUnsignedWrap &&
@@ -1091,7 +1298,8 @@ struct OverflowingBinaryOp_match {
       if (WrapFlags & OverflowingBinaryOperator::NoSignedWrap &&
           !Op->hasNoSignedWrap())
         return false;
-      return L.match(Op->getOperand(0)) && R.match(Op->getOperand(1));
+      return L.match(Op->getOperand(0), MContext) &&
+             R.match(Op->getOperand(1), MContext);
     }
     return false;
   }
@@ -1102,32 +1310,32 @@ inline OverflowingBinaryOp_match<LHS, RHS, Instruction::Add,
                                  OverflowingBinaryOperator::NoSignedWrap>
 m_NSWAdd(const LHS &L, const RHS &R) {
   return OverflowingBinaryOp_match<LHS, RHS, Instruction::Add,
-                                   OverflowingBinaryOperator::NoSignedWrap>(
-      L, R);
+                                   OverflowingBinaryOperator::NoSignedWrap>(L,
+                                                                            R);
 }
 template <typename LHS, typename RHS>
 inline OverflowingBinaryOp_match<LHS, RHS, Instruction::Sub,
                                  OverflowingBinaryOperator::NoSignedWrap>
 m_NSWSub(const LHS &L, const RHS &R) {
   return OverflowingBinaryOp_match<LHS, RHS, Instruction::Sub,
-                                   OverflowingBinaryOperator::NoSignedWrap>(
-      L, R);
+                                   OverflowingBinaryOperator::NoSignedWrap>(L,
+                                                                            R);
 }
 template <typename LHS, typename RHS>
 inline OverflowingBinaryOp_match<LHS, RHS, Instruction::Mul,
                                  OverflowingBinaryOperator::NoSignedWrap>
 m_NSWMul(const LHS &L, const RHS &R) {
   return OverflowingBinaryOp_match<LHS, RHS, Instruction::Mul,
-                                   OverflowingBinaryOperator::NoSignedWrap>(
-      L, R);
+                                   OverflowingBinaryOperator::NoSignedWrap>(L,
+                                                                            R);
 }
 template <typename LHS, typename RHS>
 inline OverflowingBinaryOp_match<LHS, RHS, Instruction::Shl,
                                  OverflowingBinaryOperator::NoSignedWrap>
 m_NSWShl(const LHS &L, const RHS &R) {
   return OverflowingBinaryOp_match<LHS, RHS, Instruction::Shl,
-                                   OverflowingBinaryOperator::NoSignedWrap>(
-      L, R);
+                                   OverflowingBinaryOperator::NoSignedWrap>(L,
+                                                                            R);
 }
 
 template <typename LHS, typename RHS>
@@ -1173,11 +1381,20 @@ struct BinOpPred_match : Predicate {
 
   BinOpPred_match(const LHS_t &LHS, const RHS_t &RHS) : L(LHS), R(RHS) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<Instruction>(V))
-      return this->isOpType(I->getOpcode()) && L.match(I->getOperand(0)) &&
-             R.match(I->getOperand(1));
-    if (auto *CE = dyn_cast<ConstantExpr>(V))
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *I = trait_dyn_cast<Trait, Instruction>(V))
+      return this->isOpType(I->getOpcode()) &&
+             L.match(I->getOperand(0), MContext) &&
+             R.match(I->getOperand(1), MContext);
+    if (auto *CE = trait_dyn_cast<Trait, ConstantExpr>(V))
       return this->isOpType(CE->getOpcode()) && L.match(CE->getOperand(0)) &&
              R.match(CE->getOperand(1));
     return false;
@@ -1268,9 +1485,17 @@ template <typename SubPattern_t> struct Exact_match {
 
   Exact_match(const SubPattern_t &SP) : SubPattern(SP) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *PEO = dyn_cast<PossiblyExactOperator>(V))
-      return PEO->isExact() && SubPattern.match(V);
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *PEO = trait_dyn_cast<Trait, PossiblyExactOperator>(V))
+      return PEO->isExact() && SubPattern.match(V, MContext);
     return false;
   }
 };
@@ -1295,13 +1520,29 @@ struct CmpClass_match {
   CmpClass_match(PredicateTy &Pred, const LHS_t &LHS, const RHS_t &RHS)
       : Predicate(Pred), L(LHS), R(RHS) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<Class>(V)) {
-      if (L.match(I->getOperand(0)) && R.match(I->getOperand(1))) {
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *I = trait_dyn_cast<Trait, Class>(V)) {
+      MatcherContext<Trait> LRContext(MContext);
+      if (L.match(I->getOperand(0), LRContext) &&
+          R.match(I->getOperand(1), LRContext)) {
+        MContext = LRContext;
         Predicate = I->getPredicate();
         return true;
-      } else if (Commutable && L.match(I->getOperand(1)) &&
-           R.match(I->getOperand(0))) {
+      }
+
+      if (!Commutable)
+        return false;
+
+      if (L.match(I->getOperand(1), MContext) &&
+          R.match(I->getOperand(0), MContext)) {
         Predicate = I->getSwappedPredicate();
         return true;
       }
@@ -1338,10 +1579,18 @@ template <typename T0, unsigned Opcode> struct OneOps_match {
 
   OneOps_match(const T0 &Op1) : Op1(Op1) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (V->getValueID() == Value::InstructionVal + Opcode) {
-      auto *I = cast<Instruction>(V);
-      return Op1.match(I->getOperand(0));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    auto *I = trait_dyn_cast<Trait, Instruction>(V);
+    if (I && I->getOpcode() == Opcode) {
+      return Op1.match(I->getOperand(0), MContext);
     }
     return false;
   }
@@ -1354,10 +1603,19 @@ template <typename T0, typename T1, unsigned Opcode> struct TwoOps_match {
 
   TwoOps_match(const T0 &Op1, const T1 &Op2) : Op1(Op1), Op2(Op2) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (V->getValueID() == Value::InstructionVal + Opcode) {
-      auto *I = cast<Instruction>(V);
-      return Op1.match(I->getOperand(0)) && Op2.match(I->getOperand(1));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    auto *I = trait_dyn_cast<Trait, Instruction>(V);
+    if (I && I->getOpcode() == Opcode) {
+      return Op1.match(I->getOperand(0), MContext) &&
+             Op2.match(I->getOperand(1), MContext);
     }
     return false;
   }
@@ -1373,11 +1631,20 @@ struct ThreeOps_match {
   ThreeOps_match(const T0 &Op1, const T1 &Op2, const T2 &Op3)
       : Op1(Op1), Op2(Op2), Op3(Op3) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (V->getValueID() == Value::InstructionVal + Opcode) {
-      auto *I = cast<Instruction>(V);
-      return Op1.match(I->getOperand(0)) && Op2.match(I->getOperand(1)) &&
-             Op3.match(I->getOperand(2));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    auto *I = trait_dyn_cast<Trait, Instruction>(V);
+    if (I && I->getOpcode() == Opcode) {
+      return Op1.match(I->getOperand(0), MContext) &&
+             Op2.match(I->getOperand(1), MContext) &&
+             Op3.match(I->getOperand(2), MContext);
     }
     return false;
   }
@@ -1429,10 +1696,18 @@ template <typename T0, typename T1, typename T2> struct Shuffle_match {
   Shuffle_match(const T0 &Op1, const T1 &Op2, const T2 &Mask)
       : Op1(Op1), Op2(Op2), Mask(Mask) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<ShuffleVectorInst>(V)) {
-      return Op1.match(I->getOperand(0)) && Op2.match(I->getOperand(1)) &&
-             Mask.match(I->getShuffleMask());
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *I = trait_dyn_cast<Trait, ShuffleVectorInst>(V)) {
+      return Op1.match(I->getOperand(0), MContext) &&
+             Op2.match(I->getOperand(1), MContext) && Mask.match(I->getShuffleMask());
     }
     return false;
   }
@@ -1508,9 +1783,17 @@ template <typename Op_t, unsigned Opcode> struct CastClass_match {
 
   CastClass_match(const Op_t &OpMatch) : Op(OpMatch) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *O = dyn_cast<Operator>(V))
-      return O->getOpcode() == Opcode && Op.match(O->getOperand(0));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &Matcher) {
+    if (!Matcher.accept(V))
+      return false;
+    if (auto O = trait_dyn_cast<Trait, Operator>(V))
+      return O->getOpcode() == Opcode && Op.match(O->getOperand(0), Matcher);
     return false;
   }
 };
@@ -1624,8 +1907,16 @@ struct br_match {
 
   br_match(BasicBlock *&Succ) : Succ(Succ) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *BI = dyn_cast<BranchInst>(V))
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *BI = trait_dyn_cast<Trait, BranchInst>(V))
       if (BI->isUnconditional()) {
         Succ = BI->getSuccessor(0);
         return true;
@@ -1645,10 +1936,18 @@ struct brc_match {
   brc_match(const Cond_t &C, const TrueBlock_t &t, const FalseBlock_t &f)
       : Cond(C), T(t), F(f) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *BI = dyn_cast<BranchInst>(V))
-      if (BI->isConditional() && Cond.match(BI->getCondition()))
-        return T.match(BI->getSuccessor(0)) && F.match(BI->getSuccessor(1));
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (auto *BI = trait_dyn_cast<Trait, BranchInst>(V))
+      if (BI->isConditional() && Cond.match(BI->getCondition(), MContext)) {
+        return T.match(BI->getSuccessor(0), MContext) &&
+               F.match(BI->getSuccessor(1), MContext);
+      }
     return false;
   }
 };
@@ -1680,24 +1979,36 @@ struct MaxMin_match {
   // The LHS is always matched first.
   MaxMin_match(const LHS_t &LHS, const RHS_t &RHS) : L(LHS), R(RHS) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *II = dyn_cast<IntrinsicInst>(V)) {
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait = DefaultTrait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (!MContext.accept(V))
+      return false;
+    if (auto *II = trait_dyn_cast<Trait, IntrinsicInst>(V)) {
       Intrinsic::ID IID = II->getIntrinsicID();
       if ((IID == Intrinsic::smax && Pred_t::match(ICmpInst::ICMP_SGT)) ||
           (IID == Intrinsic::smin && Pred_t::match(ICmpInst::ICMP_SLT)) ||
           (IID == Intrinsic::umax && Pred_t::match(ICmpInst::ICMP_UGT)) ||
           (IID == Intrinsic::umin && Pred_t::match(ICmpInst::ICMP_ULT))) {
         Value *LHS = II->getOperand(0), *RHS = II->getOperand(1);
-        return (L.match(LHS) && R.match(RHS)) ||
-               (Commutable && L.match(RHS) && R.match(LHS));
+        MatcherContext<Trait> LRContext(MContext);
+        if (L.match(LHS, LRContext) && R.match(RHS, LRContext)) {
+          MContext = LRContext;
+          return true;
+        }
+        return Commutable && L.match(RHS, MContext) && R.match(LHS, MContext);
       }
     }
     // Look for "(x pred y) ? x : y" or "(x pred y) ? y : x".
-    auto *SI = dyn_cast<SelectInst>(V);
-    if (!SI)
+    auto *SI = trait_dyn_cast<Trait, SelectInst>(V);
+    if (!SI || !MContext.accept(SI))
       return false;
-    auto *Cmp = dyn_cast<CmpInst_t>(SI->getCondition());
-    if (!Cmp)
+    auto *Cmp = trait_dyn_cast<Trait, CmpInst_t>(SI->getCondition());
+    if (!Cmp || !MContext.accept(Cmp))
       return false;
     // At this point we have a select conditioned on a comparison.  Check that
     // it is the values returned by the select that are being compared.
@@ -1713,9 +2024,15 @@ struct MaxMin_match {
     // Does "(x pred y) ? x : y" represent the desired max/min operation?
     if (!Pred_t::match(Pred))
       return false;
+
     // It does!  Bind the operands.
-    return (L.match(LHS) && R.match(RHS)) ||
-           (Commutable && L.match(RHS) && R.match(LHS));
+    // TODO factor out commutative matching!
+    MatcherContext<Trait> LRContext(MContext);
+    if (L.match(LHS, LRContext) && R.match(RHS, LRContext)) {
+      MContext = LRContext;
+      return true;
+    }
+    return Commutable && L.match(RHS, MContext) && R.match(LHS, MContext);
   }
 };
 
@@ -1884,50 +2201,77 @@ struct UAddWithOverflow_match {
   UAddWithOverflow_match(const LHS_t &L, const RHS_t &R, const Sum_t &S)
       : L(L), R(R), S(S) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
     Value *ICmpLHS, *ICmpRHS;
     ICmpInst::Predicate Pred;
-    if (!m_ICmp(Pred, m_Value(ICmpLHS), m_Value(ICmpRHS)).match(V))
+    if (!try_match(V, m_ICmp(Pred, m_Value(ICmpLHS), m_Value(ICmpRHS)), MContext))
       return false;
 
     Value *AddLHS, *AddRHS;
     auto AddExpr = m_Add(m_Value(AddLHS), m_Value(AddRHS));
 
     // (a + b) u< a, (a + b) u< b
-    if (Pred == ICmpInst::ICMP_ULT)
-      if (AddExpr.match(ICmpLHS) && (ICmpRHS == AddLHS || ICmpRHS == AddRHS))
-        return L.match(AddLHS) && R.match(AddRHS) && S.match(ICmpLHS);
+    if (Pred == ICmpInst::ICMP_ULT) {
+      if (try_match(ICmpLHS, AddExpr, MContext) &&
+          (ICmpRHS == AddLHS || ICmpRHS == AddRHS)) {
+        return L.match(AddLHS, MContext) && R.match(AddRHS, MContext) &&
+               S.match(ICmpLHS, MContext);
+      }
+    }
 
     // a >u (a + b), b >u (a + b)
-    if (Pred == ICmpInst::ICMP_UGT)
-      if (AddExpr.match(ICmpRHS) && (ICmpLHS == AddLHS || ICmpLHS == AddRHS))
-        return L.match(AddLHS) && R.match(AddRHS) && S.match(ICmpRHS);
+    if (Pred == ICmpInst::ICMP_UGT) {
+      if (try_match(ICmpRHS, AddExpr, MContext) &&
+          (ICmpLHS == AddLHS || ICmpLHS == AddRHS)) {
+        return L.match(AddLHS, MContext) && R.match(AddRHS, MContext) &&
+               S.match(ICmpRHS, MContext);
+      }
+    }
 
     Value *Op1;
     auto XorExpr = m_OneUse(m_Xor(m_Value(Op1), m_AllOnes()));
     // (a ^ -1) <u b
     if (Pred == ICmpInst::ICMP_ULT) {
-      if (XorExpr.match(ICmpLHS))
-        return L.match(Op1) && R.match(ICmpRHS) && S.match(ICmpLHS);
+      if (try_match(ICmpLHS, XorExpr, MContext)) {
+        return L.match(Op1) && R.match(ICmpRHS, MContext) &&
+               S.match(ICmpLHS, MContext);
+      }
     }
     //  b > u (a ^ -1)
     if (Pred == ICmpInst::ICMP_UGT) {
-      if (XorExpr.match(ICmpRHS))
-        return L.match(Op1) && R.match(ICmpLHS) && S.match(ICmpRHS);
+      if (try_match(ICmpRHS, XorExpr, MContext)) {
+        return L.match(Op1, MContext) && R.match(ICmpLHS, MContext) && S.match(ICmpRHS, MContext);
+      }
     }
 
     // Match special-case for increment-by-1.
     if (Pred == ICmpInst::ICMP_EQ) {
       // (a + 1) == 0
       // (1 + a) == 0
-      if (AddExpr.match(ICmpLHS) && m_ZeroInt().match(ICmpRHS) &&
-          (m_One().match(AddLHS) || m_One().match(AddRHS)))
-        return L.match(AddLHS) && R.match(AddRHS) && S.match(ICmpLHS);
+      MatcherContext<Trait> CopyCtx(MContext);
+      if (AddExpr.match(ICmpLHS, CopyCtx) &&
+          m_ZeroInt().match(ICmpRHS, CopyCtx)) {
+        if (try_match(AddLHS, m_One(), CopyCtx) ||
+            try_match(AddRHS, m_One(), CopyCtx)) {
+          MContext = CopyCtx;
+          return L.match(AddLHS, MContext) && R.match(AddRHS, MContext) &&
+                 S.match(ICmpLHS, MContext);
+        }
+      }
       // 0 == (a + 1)
       // 0 == (1 + a)
-      if (m_ZeroInt().match(ICmpLHS) && AddExpr.match(ICmpRHS) &&
-          (m_One().match(AddLHS) || m_One().match(AddRHS)))
-        return L.match(AddLHS) && R.match(AddRHS) && S.match(ICmpRHS);
+      if (m_ZeroInt().match(ICmpLHS, MContext) &&
+          AddExpr.match(ICmpRHS, MContext) &&
+          (try_match(AddLHS, m_One(), MContext) ||
+           m_One().match(AddRHS, MContext)))
+        return L.match(AddLHS, MContext) && R.match(AddRHS, MContext) &&
+               S.match(ICmpRHS, MContext);
     }
 
     return false;
@@ -1950,10 +2294,16 @@ template <typename Opnd_t> struct Argument_match {
 
   Argument_match(unsigned OpIdx, const Opnd_t &V) : OpI(OpIdx), Val(V) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
     // FIXME: Should likely be switched to use `CallBase`.
-    if (const auto *CI = dyn_cast<CallInst>(V))
-      return Val.match(CI->getArgOperand(OpI));
+    if (const auto *CI = trait_dyn_cast<Trait, CallInst>(V))
+      return Val.match(CI->getArgOperand(OpI), MContext);
     return false;
   }
 };
@@ -1970,8 +2320,14 @@ struct IntrinsicID_match {
 
   IntrinsicID_match(Intrinsic::ID IntrID) : ID(IntrID) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (const auto *CI = dyn_cast<CallInst>(V))
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (const auto *CI = trait_dyn_cast<Trait, CallInst>(V))
       if (const auto *F = CI->getCalledFunction())
         return F->getIntrinsicID() == ID;
     return false;
@@ -1996,15 +2352,13 @@ template <typename T0, typename T1> struct m_Intrinsic_Ty<T0, T1> {
 };
 template <typename T0, typename T1, typename T2>
 struct m_Intrinsic_Ty<T0, T1, T2> {
-  using Ty =
-      match_combine_and<typename m_Intrinsic_Ty<T0, T1>::Ty,
-                        Argument_match<T2>>;
+  using Ty = match_combine_and<typename m_Intrinsic_Ty<T0, T1>::Ty,
+                               Argument_match<T2>>;
 };
 template <typename T0, typename T1, typename T2, typename T3>
 struct m_Intrinsic_Ty<T0, T1, T2, T3> {
-  using Ty =
-      match_combine_and<typename m_Intrinsic_Ty<T0, T1, T2>::Ty,
-                        Argument_match<T3>>;
+  using Ty = match_combine_and<typename m_Intrinsic_Ty<T0, T1, T2>::Ty,
+                               Argument_match<T3>>;
 };
 
 template <typename T0, typename T1, typename T2, typename T3, typename T4>
@@ -2013,7 +2367,8 @@ struct m_Intrinsic_Ty<T0, T1, T2, T3, T4> {
                                Argument_match<T4>>;
 };
 
-template <typename T0, typename T1, typename T2, typename T3, typename T4, typename T5>
+template <typename T0, typename T1, typename T2, typename T3, typename T4,
+          typename T5>
 struct m_Intrinsic_Ty<T0, T1, T2, T3, T4, T5> {
   using Ty = match_combine_and<typename m_Intrinsic_Ty<T0, T1, T2, T3, T4>::Ty,
                                Argument_match<T5>>;
@@ -2243,7 +2598,13 @@ template <typename Opnd_t> struct Signum_match {
   Opnd_t Val;
   Signum_match(const Opnd_t &V) : Val(V) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
     unsigned TypeSize = V->getType()->getScalarSizeInBits();
     if (TypeSize == 0)
       return false;
@@ -2265,7 +2626,7 @@ template <typename Opnd_t> struct Signum_match {
     auto RHS = m_LShr(m_Neg(m_Value(OpR)), m_SpecificInt(ShiftWidth));
     auto Signum = m_Or(LHS, RHS);
 
-    return Signum.match(V) && OpL == OpR && Val.match(OpL);
+    return Signum.match(V, MContext) && OpL == OpR && Val.match(OpL, MContext);
   }
 };
 
@@ -2283,10 +2644,16 @@ template <int Ind, typename Opnd_t> struct ExtractValue_match {
   Opnd_t Val;
   ExtractValue_match(const Opnd_t &V) : Val(V) {}
 
-  template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<ExtractValueInst>(V))
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &MContext) {
+    if (auto *I = trait_dyn_cast<Trait, ExtractValueInst>(V))
       return I->getNumIndices() == 1 && I->getIndices()[0] == Ind &&
-             Val.match(I->getAggregateOperand());
+             Val.match(I->getAggregateOperand(), MContext);
     return false;
   }
 };
@@ -2306,9 +2673,16 @@ template <int Ind, typename T0, typename T1> struct InsertValue_match {
   InsertValue_match(const T0 &Op0, const T1 &Op1) : Op0(Op0), Op1(Op1) {}
 
   template <typename OpTy> bool match(OpTy *V) {
-    if (auto *I = dyn_cast<InsertValueInst>(V)) {
-      return Op0.match(I->getOperand(0)) && Op1.match(I->getOperand(1)) &&
-             I->getNumIndices() == 1 && Ind == I->getIndices()[0];
+    MatcherContext<DefaultTrait> Matcher;
+    return match(V, Matcher);
+  }
+
+  template <typename OpTy, typename Trait>
+  bool match(OpTy *V, MatcherContext<Trait> &Matcher) {
+    if (auto *I = trait_dyn_cast<Trait, InsertValueInst>(V)) {
+      return I->getNumIndices() == 1 && Ind == I->getIndices()[0] &&
+             Op0.match(I->getOperand(0), Matcher) &&
+             Op1.match(I->getOperand(1), Matcher);
     }
     return false;
   }
@@ -2337,12 +2711,19 @@ public:
   const DataLayout &DL;
   VScaleVal_match(const DataLayout &DL) : DL(DL) {}
 
-  template <typename ITy> bool match(ITy *V) {
+  template <typename ITy>
+  bool match(ITy *V) {
+    MatcherContext<DefaultTrait> MContext;
+    return match(V, MContext);
+  }
+  template <typename ITy, typename Trait>
+  bool match(ITy *V, MatcherContext<Trait> &MContext) {
     if (m_Intrinsic<Intrinsic::vscale>().match(V))
       return true;
 
-    if (m_PtrToInt(m_OffsetGep(m_Zero(), m_SpecificInt(1))).match(V)) {
-      Type *PtrTy = cast<Operator>(V)->getOperand(0)->getType();
+    if (m_PtrToInt(m_OffsetGep(m_Zero(), m_SpecificInt(1)))
+            .match(V, MContext)) {
+      Type *PtrTy = trait_cast<Trait, Operator>(V)->getOperand(0)->getType();
       auto *DerefTy = PtrTy->getPointerElementType();
       if (isa<ScalableVectorType>(DerefTy) &&
           DL.getTypeAllocSizeInBits(DerefTy).getKnownMinSize() == 8)
@@ -2360,4 +2741,4 @@ inline VScaleVal_match m_VScale(const DataLayout &DL) {
 } // end namespace PatternMatch
 } // end namespace llvm
 
-#endif // LLVM_IR_PATTERNMATCH_H
+#endif // LLVM_IR_TRAITPATTERNMATCH_H
