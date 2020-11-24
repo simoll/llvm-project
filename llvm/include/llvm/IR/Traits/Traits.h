@@ -24,10 +24,9 @@
 //   (https://llvm.org/docs/LangRef.html#vector-predication-intrinsics).
 //   However, at its core it is just an 'fadd'.
 //
-//   Consider the fma-fusion rewrite pattern (fadd (fmul x,y) z) --> (fma x, y,
-//   z). If the 'fadd' is actually an 'llvm.vp.fadd" and the 'fmul' is actually
-//   an 'llvm.vp.fmul', we can perform the rewrite using the %mask and %evl of
-//   the 'fadd' node.
+//   Consider the simplification (add (sub x,y), y) --> x. If the 'add' is
+//   actually an 'llvm.vp.add" and the 'sub' is really an 'llvm.vp.sub', we can
+//   do the simplification. the 'fadd' node.
 //
 //
 // @llvm.experimental.constrained.fadd(double %a, double %b,
@@ -37,14 +36,11 @@
 //   This is an fadd with a possibly non-default rounding mode and exception
 //   behavior.
 //   (https://llvm.org/docs/LangRef.html#constrained-floating-point-intrinsics).
-//   In this case, the operation matches the semantics of a regular 'fadd'
-//   exactly, if the rounding mode is 'round.tonearest' and the exception
-//   behavior is 'fpexcept.ignore'.
-//   Re-considering the case of fma fusion, this time with two constrained fp
-//   intrinsics.  If the rounding mode is tonearest for either and the
-//   'llvm.experimental.contrained.fmul' does not throw, we are good to apply
-//   the rewrite and emit a contrained fma with the exception flad of the
-//   'fadd'.
+//   The constrained fp intrinsic has exactly the semantics of a regular 'fadd',
+//   if the rounding mode is 'round.tonearest' and the exception behavior is
+//   'fpexcept.ignore'.
+//   We can use all simplifying rewrites for regular fp arithmetic also for
+//   constrained fp arithmetic where this applies.
 //
 // There is also a proposal to add complex arithmetic intrinsics to LLVM. In
 // that case, the operation is semantically an 'fadd', if we consider the space

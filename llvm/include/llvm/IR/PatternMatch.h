@@ -1,4 +1,4 @@
-//===------- PatternMatch.h - Match on the LLVM IR --------------*- C++ -*-===//
+//===- PatternMatch.h - Match on the LLVM IR --------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -25,8 +25,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_IR_TRAITPATTERNMATCH_H
-#define LLVM_IR_TRAITPATTERNMATCH_H
+#ifndef LLVM_IR_PATTERNMATCH_H
+#define LLVM_IR_PATTERNMATCH_H
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -48,21 +48,22 @@
 namespace llvm {
 namespace PatternMatch {
 
-// trait-match pattern in a given context and update the context.
+// Trait-match pattern in a given context and update the context.
 template <typename Val, typename Pattern>
 bool match(Val *V, const Pattern &P) {
-  // TODO All users uninterested in traits should use this as the only entry point to performing a match.
-  // The PatternMatch classes are poluted with overloaded 'match' functions atm.
+  // TODO: Use this instead of the Trait-less Pattern::match() functions. This
+  // single function does the same as the Trait-less 'Pattern::match()'
+  // functions that are replicated once for every Pattern.
   return const_cast<Pattern &>(P).match(V);
 }
 
-// trait-match pattern in a given context and update the context.
+// Trait-match pattern in a given context and update the context.
 template <typename Val, typename Pattern, typename Trait>
 bool match(Val *V, const Pattern &P, MatcherContext<Trait> &MContext) {
   return const_cast<Pattern &>(P).match(V, MContext);
 }
 
-// trait-match pattern and update the context on match.
+// Trait-match pattern and update the context on match.
 template <typename Val, typename Pattern, typename Trait>
 bool try_match(Val *V, const Pattern &P, MatcherContext<Trait> &MContext) {
   MatcherContext<Trait> CopyCtx(MContext);
@@ -2741,4 +2742,4 @@ inline VScaleVal_match m_VScale(const DataLayout &DL) {
 } // end namespace PatternMatch
 } // end namespace llvm
 
-#endif // LLVM_IR_TRAITPATTERNMATCH_H
+#endif // LLVM_IR_PATTERNMATCH_H
